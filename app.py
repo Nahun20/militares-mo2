@@ -16,13 +16,11 @@ from openpyxl.utils import get_column_letter
 from PIL import Image, ImageOps
 from pydantic import BaseModel
 
-# Modelo con nivel gratuito. Si deja de funcionar, prueba "gemini-3.5-flash-lite".
-MODELO = "gemini-3.8-flash"
+# Modelos con nivel gratuito, en orden de preferencia. Cada modelo tiene su propio límite
+# diario: si uno se agota o ya no existe, la app prueba con el siguiente automáticamente.
+MODELOS = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"]
 
 TITULO = "Conteo de Militares de MegaOutlet de Belleza"
-
-st.set_page_config(page_title="Conteo de Militares MegaOutlet", page_icon="📋", layout="wide")
-
 
 def encontrar_logo():
     """Busca el logo junto a app.py (logo.png, logo.jpg, logo.jpeg o logo.webp)."""
@@ -31,6 +29,23 @@ def encontrar_logo():
         if ruta.exists():
             return str(ruta)
     return None
+
+
+def icono_pagina():
+    """Logo reducido para la pestaña del navegador; si no hay logo, usa un emoji."""
+    ruta = encontrar_logo()
+    if not ruta:
+        return "📋"
+    img = Image.open(ruta)
+    img.thumbnail((128, 128))
+    return img
+
+
+st.set_page_config(
+    page_title="Conteo de Militares MegaOutlet",
+    page_icon=icono_pagina(),
+    layout="wide",
+)
 
 
 # ---------- diseño ----------
@@ -169,6 +184,14 @@ Reglas:
   Si alguno de esos campos está vacío, devuelve cadena vacía. No inventes valores."""
 
 
+def es_limite(texto: str) -> bool:
+    return "429" in texto or "RESOURCE_EXHAUSTED" in texto
+
+
+def es_limite_diario(texto: str) -> bool:
+    return "PerDay" in texto or "per day" in texto.lower()
+
+
 @st.cache_data(show_spinner=False)
 def leer_hoja(img_bytes: bytes, _client):
     jpg = preparar_imagen(img_bytes)
@@ -178,22 +201,29 @@ def leer_hoja(img_bytes: bytes, _client):
         temperature=0,
     )
     ultimo_error = None
-    for intento in range(3):
-        try:
-            r = _client.models.generate_content(
-                model=MODELO,
-                contents=[types.Part.from_bytes(data=jpg, mime_type="image/jpeg"), PROMPT],
-                config=config,
-            )
-            return json.loads(r.text)
-        except Exception as e:  # noqa: BLE001
-            ultimo_error = e
-            texto = str(e)
-            # 429 = límite gratuito por minuto: esperar y reintentar
-            if "429" in texto or "RESOURCE_EXHAUSTED" in texto or "503" in texto:
-                time.sleep(20 * (intento + 1))
-                continue
-            raise
+    for modelo in MODELOS:
+        for _ in range(2):
+            try:
+                r = _client.models.generate_content(
+                    model=modelo,
+                    contents=[types.Part.from_bytes(data=jpg, mime_type="image/jpeg"), PROMPT],
+                    config=config,
+                )
+                return json.loads(r.text)
+            except Exception as e:  # noqa: BLE001
+                ultimo_error = e
+                texto = str(e)
+                if "404" in texto or "NOT_FOUND" in texto:
+                    break  # modelo no disponible: probar el siguiente
+                if es_limite(texto):
+                    if es_limite_diario(texto):
+                        break  # cuota diaria de este modelo agotada: probar el siguiente
+                    time.sleep(20)  # límite por minuto: esperar un poco y reintentar
+                    continue
+                if "503" in texto or "UNAVAILABLE" in texto:
+                    time.sleep(10)
+                    continue
+                raise
     raise ultimo_error
 
 
@@ -300,7 +330,13 @@ if archivos:
         try:
             data = leer_hoja(f.getvalue(), client)
         except Exception as e:  # noqa: BLE001
-            errores.append(f"{f.name}: {e}")
+            if es_limite(str(e)):
+                errores.append(
+                    f"{f.name}: se agotó el límite gratuito de Google por ahora. "
+                    "Intenta de nuevo más tarde (el límite diario se reinicia cada día)."
+                )
+            else:
+                errores.append(f"{f.name}: {e}")
             continue
         for r in data.get("filas", []):
             filas.append(
