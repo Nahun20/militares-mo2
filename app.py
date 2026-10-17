@@ -21,7 +21,7 @@ MODELO = "gemini-3.8-flash"
 
 TITULO = "Conteo de Militares de MegaOutlet de Belleza"
 
-st.set_page_config(page_title="Conteo de Militares", page_icon="📋", layout="wide")
+st.set_page_config(page_title="Conteo de Militares MegaOutlet", page_icon="📋", layout="wide")
 
 
 def encontrar_logo():
