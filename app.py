@@ -1,9 +1,11 @@
+import base64
 import hashlib
 import hmac
 import io
 import json
 import os
 import time
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -17,8 +19,75 @@ from pydantic import BaseModel
 # Modelo con nivel gratuito. Si deja de funcionar, prueba "gemini-3.5-flash-lite".
 MODELO = "gemini-3.8-flash"
 
-st.set_page_config(page_title="Control de conteo", page_icon="📋", layout="wide")
-st.title("📋 Control de conteo: foto → Excel")
+TITULO = "Conteo de Militares de MegaOutlet de Belleza"
+
+st.set_page_config(page_title="Conteo de Militares", page_icon="📋", layout="wide")
+
+
+def encontrar_logo():
+    """Busca el logo junto a app.py (logo.png, logo.jpg, logo.jpeg o logo.webp)."""
+    for nombre in ("logo.png", "logo.jpg", "logo.jpeg", "logo.webp"):
+        ruta = Path(__file__).parent / nombre
+        if ruta.exists():
+            return str(ruta)
+    return None
+
+
+# ---------- diseño ----------
+ACENTO = "#B83280"  # color de acento de la cabecera (cámbialo si quieres otro)
+
+ESTILO = """
+<style>
+.block-container { max-width: 1200px; padding-top: 2rem; padding-bottom: 3rem; }
+.cabecera {
+    display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 1rem;
+    padding: 0.9rem 1.5rem; margin-bottom: 1.2rem; border-radius: 14px;
+    background: rgba(128,128,128,0.08);
+    border: 1px solid rgba(128,128,128,0.22);
+    border-bottom: 4px solid __ACENTO__;
+}
+.cabecera .izq { display: flex; align-items: center; justify-content: flex-start; }
+.cabecera .logo { height: 64px; max-width: 220px; object-fit: contain; }
+.cabecera .titulo {
+    font-size: 1.7rem; font-weight: 700; line-height: 1.2; text-align: center; margin: 0;
+}
+.subtitulo { text-align: center; opacity: 0.75; margin: 0 0 1.5rem 0; }
+[data-testid="stMetric"] {
+    text-align: center; padding: 0.8rem 0.5rem; border-radius: 12px;
+    background: rgba(128,128,128,0.08); border: 1px solid rgba(128,128,128,0.22);
+}
+[data-testid="stMetricLabel"], [data-testid="stMetricValue"] { justify-content: center; }
+@media (max-width: 720px) {
+    .cabecera { grid-template-columns: 1fr; justify-items: center; padding: 0.8rem 1rem; }
+    .cabecera .izq { justify-content: center; }
+    .cabecera .logo { height: 52px; }
+    .cabecera .titulo { font-size: 1.3rem; }
+}
+</style>
+""".replace("__ACENTO__", ACENTO)
+
+
+@st.cache_data(show_spinner=False)
+def logo_html() -> str:
+    ruta = encontrar_logo()
+    if not ruta:
+        return ""
+    ext = Path(ruta).suffix.lower().lstrip(".")
+    mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp"}[ext]
+    datos = base64.b64encode(Path(ruta).read_bytes()).decode()
+    return f'<img class="logo" src="data:{mime};base64,{datos}" alt="Logo">'
+
+
+def mostrar_cabecera():
+    st.markdown(ESTILO, unsafe_allow_html=True)
+    html = (
+        '<div class="cabecera">'
+        f'<div class="izq">{logo_html()}</div>'
+        f'<div class="titulo">{TITULO}</div>'
+        "<div></div>"
+        "</div>"
+    )
+    st.markdown(html, unsafe_allow_html=True)
 
 
 # ---------- cliente de la API ----------
@@ -182,26 +251,37 @@ def a_excel(df: pd.DataFrame, incluir_revision: bool) -> bytes:
 
 
 # ---------- acceso con contraseña (opcional) ----------
-def pedir_clave():
-    """Si existe APP_PASSWORD en los secrets, pide la contraseña antes de mostrar la app."""
+def pedir_clave() -> bool:
+    """Devuelve True si se puede mostrar la app. Si existe APP_PASSWORD en los
+    secrets, muestra la pantalla de acceso (logo, título y contraseña)."""
     try:
         clave = st.secrets["APP_PASSWORD"]
     except Exception:
-        return  # sin contraseña configurada (uso local): no se pide nada
+        return True  # sin contraseña configurada (uso local): no se pide nada
     if st.session_state.get("autorizado"):
-        return
-    ingreso = st.text_input("Contraseña de acceso", type="password")
-    if ingreso:
-        if hmac.compare_digest(ingreso, str(clave)):
-            st.session_state["autorizado"] = True
-            st.rerun()
-        else:
-            st.error("Contraseña incorrecta")
-    st.stop()
+        return True
+
+    _, centro, _ = st.columns([1, 1.4, 1])
+    with centro:
+        st.markdown("<p class='subtitulo'>Acceso para personal autorizado</p>", unsafe_allow_html=True)
+        ingreso = st.text_input("Contraseña de acceso", type="password")
+        if ingreso:
+            if hmac.compare_digest(ingreso, str(clave)):
+                st.session_state["autorizado"] = True
+                st.rerun()
+            else:
+                st.error("Contraseña incorrecta")
+    return False
 
 
 # ---------- interfaz ----------
-pedir_clave()
+mostrar_cabecera()
+if not pedir_clave():
+    st.stop()
+st.markdown(
+    "<p class='subtitulo'>Sube las fotos de tus hojas de conteo, revisa la tabla y descarga el Excel.</p>",
+    unsafe_allow_html=True,
+)
 client = get_client()
 
 archivos = st.file_uploader(
@@ -277,13 +357,14 @@ if archivos:
         c2.metric("Total de piezas", f"{total:,}")
         c3.metric("Por revisar", dudosas)
 
-        incluir = st.checkbox("Incluir columnas de revisión (Estado y Nota) en el Excel (las filas por revisar siempre salen en amarillo)", value=False)
-        st.download_button(
+        _, centro, _ = st.columns([1, 1, 1])
+        centro.download_button(
             "⬇️ DESCARGAR EXCEL",
-            a_excel(editado, incluir),
+            a_excel(editado, True),
             "inventario.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary",
+            use_container_width=True,
         )
     elif not errores:
         st.warning("No encontré filas con datos. Prueba con una foto más recta y con buena luz.")
